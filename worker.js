@@ -1380,49 +1380,128 @@ export default {
       }
 
       if (path.endsWith("/users/patch") && (method === "PATCH" || method === "POST")) {
-        const uname = params.user || body.username || body.user;
-        if (db && uname) {
-          if ("role" in body) {
-            await db.prepare("UPDATE users SET role = ? WHERE LOWER(username) = LOWER(?)").bind(body.role, uname).run();
-          }
-          if ("isBanned" in body) {
-            if (uname.toLowerCase() === "dustgames" && body.isBanned) {
-              return textResponse("Невозможно заблокировать владельца DustGames.", 400);
-            }
-            await db.prepare("UPDATE users SET banned = ? WHERE LOWER(username) = LOWER(?)").bind(body.isBanned ? 1 : 0, uname).run();
-          }
-          if ("subTill" in body || "subtill" in body) {
-            const sVal = ("subTill" in body ? body.subTill : body.subtill) || "None";
-            await db.prepare("UPDATE users SET subtill = ? WHERE LOWER(username) = LOWER(?)").bind(sVal, uname).run();
-          }
-          if ("email" in body) {
-            await db.prepare("UPDATE users SET email = ? WHERE LOWER(username) = LOWER(?)").bind(body.email, uname).run();
-          }
-          if ("uid" in body || "newUid" in body || "id" in body || params.uid || params.newUid) {
-            const rawUid = body.newUid || body.uid || body.id || params.newUid || params.uid;
-            const newId = parseInt(rawUid, 10);
-            if (!isNaN(newId) && newId > 0) {
-              const targetUser = await db.prepare("SELECT * FROM users WHERE LOWER(username) = LOWER(?)").bind(uname).first();
-              if (targetUser && targetUser.id !== newId) {
-                const existing = await db.prepare("SELECT * FROM users WHERE id = ?").bind(newId).first();
-                if (existing) {
-                  const maxRow = await db.prepare("SELECT MAX(id) as maxId FROM users").first();
-                  const tempId = ((maxRow && maxRow.maxId) ? maxRow.maxId : 1000) + 1;
-                  await db.prepare("UPDATE users SET id = ? WHERE id = ?").bind(tempId, existing.id).run();
-                }
-                await db.prepare("UPDATE users SET id = ? WHERE LOWER(username) = LOWER(?)").bind(newId, uname).run();
-              }
-            }
+        if (!db) {
+          return textResponse("Database not available", 500);
+        }
+
+        // Try to identify target user by origUid, targetUid, origUser, oldUser, uname, or uid
+        let targetUser = null;
+        const searchUid = parseInt(body.origUid || params.origUid || body.targetUid || params.targetUid || "", 10);
+        if (!isNaN(searchUid) && searchUid > 0) {
+          targetUser = await db.prepare("SELECT * FROM users WHERE id = ?").bind(searchUid).first();
+        }
+        if (!targetUser) {
+          const origName = body.origUser || body.oldUser || params.origUser || params.oldUser;
+          if (origName) {
+            targetUser = await db.prepare("SELECT * FROM users WHERE LOWER(username) = LOWER(?)").bind(origName).first();
           }
         }
+        if (!targetUser) {
+          const uname = params.user || body.username || body.user;
+          if (uname) {
+            targetUser = await db.prepare("SELECT * FROM users WHERE LOWER(username) = LOWER(?)").bind(uname).first();
+          }
+        }
+        if (!targetUser) {
+          const rawUid = body.uid || body.newUid || params.uid;
+          const uidNum = parseInt(rawUid, 10);
+          if (!isNaN(uidNum) && uidNum > 0) {
+            targetUser = await db.prepare("SELECT * FROM users WHERE id = ?").bind(uidNum).first();
+          }
+        }
+
+        if (!targetUser) {
+          return textResponse("Пользователь не найден", 404);
+        }
+
+        let currentId = targetUser.id;
+        const currentUsername = targetUser.username;
+
+        // 1. Username / Login change
+        const requestedNewUsername = body.newUsername !== undefined ? body.newUsername : (body.username !== undefined ? body.username : body.user);
+        if (typeof requestedNewUsername === "string" && requestedNewUsername.trim().length > 0) {
+          const newUname = requestedNewUsername.trim();
+          if (newUname !== currentUsername) {
+            if (currentUsername.toLowerCase() === "dustgames" && newUname.toLowerCase() !== "dustgames") {
+              return textResponse("Невозможно изменить логин главного администратора DustGames.", 400);
+            }
+            if (newUname.toLowerCase() === "dustgames" && currentUsername.toLowerCase() !== "dustgames") {
+              return textResponse("Логин DustGames зарезервирован.", 400);
+            }
+            if (newUname.length < 2 || newUname.length > 32) {
+              return textResponse("Логин должен быть от 2 до 32 символов.", 400);
+            }
+            const taken = await db.prepare("SELECT id FROM users WHERE LOWER(username) = LOWER(?) AND id != ?").bind(newUname, currentId).first();
+            if (taken) {
+              return textResponse("Пользователь с таким логином уже существует.", 400);
+            }
+            await db.prepare("UPDATE users SET username = ? WHERE id = ?").bind(newUname, currentId).run();
+            await db.prepare("UPDATE tokens SET username = ? WHERE LOWER(username) = LOWER(?)").bind(newUname, currentUsername).run();
+            await db.prepare("UPDATE promocode_usages SET username = ? WHERE LOWER(username) = LOWER(?)").bind(newUname, currentUsername).run();
+          }
+        }
+
+        // 2. Role
+        if ("role" in body) {
+          await db.prepare("UPDATE users SET role = ? WHERE id = ?").bind(body.role, currentId).run();
+        }
+
+        // 3. isBanned
+        if ("isBanned" in body) {
+          if (currentUsername.toLowerCase() === "dustgames" && body.isBanned) {
+            return textResponse("Невозможно заблокировать владельца DustGames.", 400);
+          }
+          await db.prepare("UPDATE users SET banned = ? WHERE id = ?").bind(body.isBanned ? 1 : 0, currentId).run();
+        }
+
+        // 4. subTill
+        if ("subTill" in body || "subtill" in body) {
+          const sVal = ("subTill" in body ? body.subTill : body.subtill) || "None";
+          await db.prepare("UPDATE users SET subtill = ? WHERE id = ?").bind(sVal, currentId).run();
+        }
+
+        // 5. email
+        if ("email" in body && body.email) {
+          const newEmail = String(body.email).trim();
+          if (newEmail) {
+            const emailTaken = await db.prepare("SELECT id FROM users WHERE LOWER(email) = LOWER(?) AND id != ?").bind(newEmail, currentId).first();
+            if (emailTaken) {
+              return textResponse("Этот email уже используется другим пользователем.", 400);
+            }
+            await db.prepare("UPDATE users SET email = ? WHERE id = ?").bind(newEmail, currentId).run();
+          }
+        }
+
+        // 6. UID change
+        if ("uid" in body || "newUid" in body || "id" in body || params.uid || params.newUid) {
+          const rawUid = body.newUid || body.uid || body.id || params.newUid || params.uid;
+          const newId = parseInt(rawUid, 10);
+          if (!isNaN(newId) && newId > 0 && newId !== currentId) {
+            const existing = await db.prepare("SELECT * FROM users WHERE id = ?").bind(newId).first();
+            if (existing) {
+              const maxRow = await db.prepare("SELECT MAX(id) as maxId FROM users").first();
+              const tempId = ((maxRow && maxRow.maxId) ? maxRow.maxId : 1000) + 1;
+              await db.prepare("UPDATE users SET id = ? WHERE id = ?").bind(tempId, existing.id).run();
+            }
+            await db.prepare("UPDATE users SET id = ? WHERE id = ?").bind(newId, currentId).run();
+            currentId = newId;
+          }
+        }
+
         return textResponse("User updated");
       }
 
       if ((path.endsWith("/users/removeSub") || path.endsWith("/users/revokeSub")) && (method === "POST" || method === "PATCH" || method === "GET")) {
+        const uid = parseInt(params.uid || body.uid || body.origUid || "", 10);
         const uname = params.user || params.username || body.username || body.user;
-        if (db && uname) {
-          await db.prepare("UPDATE users SET subtill = 'None' WHERE LOWER(username) = LOWER(?)").bind(uname).run();
-          return textResponse("Subscription removed");
+        if (db) {
+          if (!isNaN(uid) && uid > 0) {
+            await db.prepare("UPDATE users SET subtill = 'None' WHERE id = ?").bind(uid).run();
+            return textResponse("Subscription removed");
+          } else if (uname) {
+            await db.prepare("UPDATE users SET subtill = 'None' WHERE LOWER(username) = LOWER(?)").bind(uname).run();
+            return textResponse("Subscription removed");
+          }
         }
         return textResponse("User not found", 400);
       }
@@ -1453,10 +1532,15 @@ export default {
       }
 
       if (path.endsWith("/resetHardwareId")) {
+        const uid = parseInt(params.uid || body.uid || body.origUid || "", 10);
         const uname = params.user || body.username;
-        if (db && uname) {
+        if (db) {
           const newHwid = "RESET-" + generateToken().slice(0, 8).toUpperCase();
-          await db.prepare("UPDATE users SET hwid = ? WHERE LOWER(username) = LOWER(?)").bind(newHwid, uname).run();
+          if (!isNaN(uid) && uid > 0) {
+            await db.prepare("UPDATE users SET hwid = ? WHERE id = ?").bind(newHwid, uid).run();
+          } else if (uname) {
+            await db.prepare("UPDATE users SET hwid = ? WHERE LOWER(username) = LOWER(?)").bind(newHwid, uname).run();
+          }
         }
         return textResponse("HWID reset");
       }
