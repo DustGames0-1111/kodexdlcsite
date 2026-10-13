@@ -1325,8 +1325,9 @@ export default {
             }
             await db.prepare("UPDATE users SET banned = ? WHERE LOWER(username) = LOWER(?)").bind(body.isBanned ? 1 : 0, uname).run();
           }
-          if ("subTill" in body) {
-            await db.prepare("UPDATE users SET subtill = ? WHERE LOWER(username) = LOWER(?)").bind(body.subTill, uname).run();
+          if ("subTill" in body || "subtill" in body) {
+            const sVal = ("subTill" in body ? body.subTill : body.subtill) || "None";
+            await db.prepare("UPDATE users SET subtill = ? WHERE LOWER(username) = LOWER(?)").bind(sVal, uname).run();
           }
           if ("email" in body) {
             await db.prepare("UPDATE users SET email = ? WHERE LOWER(username) = LOWER(?)").bind(body.email, uname).run();
@@ -1349,6 +1350,15 @@ export default {
           }
         }
         return textResponse("User updated");
+      }
+
+      if ((path.endsWith("/users/removeSub") || path.endsWith("/users/revokeSub")) && (method === "POST" || method === "PATCH" || method === "GET")) {
+        const uname = params.user || params.username || body.username || body.user;
+        if (db && uname) {
+          await db.prepare("UPDATE users SET subtill = 'None' WHERE LOWER(username) = LOWER(?)").bind(uname).run();
+          return textResponse("Subscription removed");
+        }
+        return textResponse("User not found", 400);
       }
 
       if ((path.endsWith("/users/changeUid") || path.endsWith("/users/setUid")) && (method === "POST" || method === "PATCH")) {
