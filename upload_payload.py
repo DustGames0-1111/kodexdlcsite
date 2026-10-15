@@ -42,7 +42,7 @@ def upload_payload(server_url: str, token: str, version: str, entry_class: str, 
 
 def main():
     parser = argparse.ArgumentParser(description="Upload encrypted client payload to Cloudflare Worker.")
-    parser.add_argument("--server", "-s", default="https://kodexdlc.fun", help="Target server URL (default: https://kodexdlc.fun)")
+    parser.add_argument("--server", "-s", default="https://kodexclient.fun", help="Target server URL (default: https://kodexclient.fun)")
     parser.add_argument("--token", "-t", required=True, help="Admin session token")
     parser.add_argument("--version", "-v", default="1.21.11", help="Target version (default: 1.21.11)")
     parser.add_argument("--entry", "-e", default="ru.kodex.client.Main", help="Entry class name")

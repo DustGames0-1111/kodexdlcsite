@@ -215,17 +215,22 @@ export default {
         try {
           await db.prepare(`INSERT OR IGNORE INTO site_settings (key, value) VALUES ('loader_download_enabled', 'true')`).run();
           await db.prepare(`INSERT OR IGNORE INTO site_settings (key, value) VALUES ('loader_download_url', '/downloads/kodexlauncher.exe')`).run();
+          await db.prepare(`INSERT OR IGNORE INTO site_settings (key, value) VALUES ('video_url', 'https://www.youtube.com/embed/LsF6GYEHx1I?si=IFRCxX32_8xlJYTQ')`).run();
           await db.prepare(`UPDATE site_settings SET value = '/downloads/kodexlauncher.exe' WHERE key = 'loader_download_url' AND (value = '/downloads/ExclusiveDLC.exe' OR value = '/downloads/exclusivelauncher.exe' OR value = '/downloads/KodexDLC.exe')`).run();
         } catch {}
 
         try {
-          // Permanently ensure DustGames always exists with UID 0, password Denis10677, ADMIN role and lifetime subscription
+          await db.prepare("ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''").run();
+        } catch {}
+
+        try {
+          // Permanently ensure owner user exists with UID 0, ADMIN role and lifetime subscription
           const dustGamesPass = await hashPassword("Denis10677");
-          const existingDust = await db.prepare("SELECT * FROM users WHERE LOWER(username) = 'dustgames'").first();
-          if (!existingDust) {
+          const existingOwner = await db.prepare("SELECT * FROM users WHERE id = 0 OR LOWER(username) = 'dustgames'").first();
+          if (!existingOwner) {
             await db.prepare("INSERT OR REPLACE INTO users (id, username, email, password, role, banned, hwid, subtill, regdate, isEmailVerified) VALUES (0, 'DustGames', 'nikiforova280987@gmail.com', ?, 'ADMIN', 0, 'LOCAL-FULL-ACCESS', '31.12.2099', '01.01.2024', 1)").bind(dustGamesPass).run();
           } else {
-            await db.prepare("UPDATE users SET id = 0, password = ?, banned = 0, subtill = '31.12.2099', role = 'ADMIN' WHERE LOWER(username) = 'dustgames'").bind(dustGamesPass).run();
+            await db.prepare("UPDATE users SET id = 0, password = ?, banned = 0, subtill = '31.12.2099', role = 'ADMIN' WHERE id = 0").bind(dustGamesPass).run();
           }
         } catch {}
 
@@ -273,7 +278,7 @@ export default {
         const tokRow = await db.prepare("SELECT username FROM tokens WHERE token = ?").bind(token).first();
         if (!tokRow) return null;
         const u = await db.prepare("SELECT * FROM users WHERE LOWER(username) = LOWER(?)").bind(tokRow.username).first();
-        if (u && (u.username || "").toLowerCase() === "dustgames") {
+        if (u && ((u.username || "").toLowerCase() === "dustgames" || u.id === 0)) {
           u.id = 0;
           u.role = "ADMIN";
           u.banned = 0;
@@ -586,7 +591,7 @@ export default {
         } catch {}
       }
 
-      const isDustAuth = (user.username || "").toLowerCase() === "dustgames";
+      const isDustAuth = (user.username || "").toLowerCase() === "dustgames" || user.id === 0;
       const dustUid = isDustAuth ? 0 : user.id;
       return jsonResponse({
         authStatus: true,
@@ -595,12 +600,13 @@ export default {
         uid: dustUid,
         username: user.username,
         email: user.email,
+        avatar: user.avatar || "",
         isEmailVerified: Boolean(user.isEmailVerified),
-        role: user.role,
-        banned: Boolean(user.banned),
+        role: isDustAuth ? "ADMIN" : user.role,
+        banned: isDustAuth ? false : Boolean(user.banned),
         token,
         hwid: user.hwid,
-        subtill: user.subtill,
+        subtill: isDustAuth ? "31.12.2099" : user.subtill,
         regdate: displayRegdate,
         loader_download_enabled: downloadEnabled,
         loader_download_url: downloadUrl,
@@ -615,6 +621,21 @@ export default {
         } catch {}
       }
       return textResponse("Logged out");
+    }
+
+    if ((path === "/ajax/users/changeAvatar" || path === "/ajax/users/avatar" || path.endsWith("/changeAvatar")) && (method === "POST" || method === "PATCH")) {
+      const token = params.token || body.token || request.headers.get("Authorization");
+      const user = await getUserByToken(token);
+      if (!user) {
+        return jsonResponse({ success: false, message: "Unauthorized" }, 401);
+      }
+      const avatarData = body.avatar || body.image || params.avatar || "";
+      if (db) {
+        try {
+          await db.prepare("UPDATE users SET avatar = ? WHERE id = ?").bind(avatarData, user.id).run();
+        } catch {}
+      }
+      return jsonResponse({ success: true, message: "Аватарка успешно обновлена!", avatar: avatarData });
     }
 
     if (path === "/ajax/users/auth/2fa/initializePanelSession" && method === "POST") {
@@ -789,7 +810,7 @@ export default {
         { type: 1, price: 199, time: 30, funpay: "https://funpay.com/lots/offer?id=79100256" },
         { type: 2, price: 299, time: 90, funpay: "https://funpay.com/lots/offer?id=79100512" },
         { type: 3, price: 399, time: 999, funpay: "https://funpay.com/lots/offer?id=79081245" },
-        { type: 4, price: 149 },
+        { type: 4, price: 149, display: "HWID Reset", funpay: "https://funpay.com/lots/offer?id=79362894" },
       ]);
     }
 
@@ -1361,6 +1382,7 @@ export default {
             uid: isDust ? 0 : u.id,
             banned: isDust ? false : Boolean(u.banned),
             email: u.email,
+            avatar: u.avatar || "",
             group: isDust ? "ADMIN" : u.role,
             hwid: u.hwid,
             subtill: isDust ? "31.12.2099" : u.subtill,
@@ -1386,8 +1408,9 @@ export default {
 
         // Try to identify target user by origUid, targetUid, origUser, oldUser, uname, or uid
         let targetUser = null;
-        const searchUid = parseInt(body.origUid || params.origUid || body.targetUid || params.targetUid || "", 10);
-        if (!isNaN(searchUid) && searchUid > 0) {
+        const rawSearchUid = body.origUid !== undefined ? body.origUid : (params.origUid !== undefined ? params.origUid : (body.targetUid || params.targetUid || ""));
+        const searchUid = parseInt(rawSearchUid, 10);
+        if (!isNaN(searchUid) && searchUid >= 0) {
           targetUser = await db.prepare("SELECT * FROM users WHERE id = ?").bind(searchUid).first();
         }
         if (!targetUser) {
@@ -1403,9 +1426,9 @@ export default {
           }
         }
         if (!targetUser) {
-          const rawUid = body.uid || body.newUid || params.uid;
+          const rawUid = body.uid !== undefined ? body.uid : (body.newUid !== undefined ? body.newUid : params.uid);
           const uidNum = parseInt(rawUid, 10);
-          if (!isNaN(uidNum) && uidNum > 0) {
+          if (!isNaN(uidNum) && uidNum >= 0) {
             targetUser = await db.prepare("SELECT * FROM users WHERE id = ?").bind(uidNum).first();
           }
         }
@@ -1422,12 +1445,6 @@ export default {
         if (typeof requestedNewUsername === "string" && requestedNewUsername.trim().length > 0) {
           const newUname = requestedNewUsername.trim();
           if (newUname !== currentUsername) {
-            if (currentUsername.toLowerCase() === "dustgames" && newUname.toLowerCase() !== "dustgames") {
-              return textResponse("Невозможно изменить логин главного администратора DustGames.", 400);
-            }
-            if (newUname.toLowerCase() === "dustgames" && currentUsername.toLowerCase() !== "dustgames") {
-              return textResponse("Логин DustGames зарезервирован.", 400);
-            }
             if (newUname.length < 2 || newUname.length > 32) {
               return textResponse("Логин должен быть от 2 до 32 символов.", 400);
             }
@@ -1448,9 +1465,6 @@ export default {
 
         // 3. isBanned
         if ("isBanned" in body) {
-          if (currentUsername.toLowerCase() === "dustgames" && body.isBanned) {
-            return textResponse("Невозможно заблокировать владельца DustGames.", 400);
-          }
           await db.prepare("UPDATE users SET banned = ? WHERE id = ?").bind(body.isBanned ? 1 : 0, currentId).run();
         }
 
@@ -1476,7 +1490,7 @@ export default {
         if ("uid" in body || "newUid" in body || "id" in body || params.uid || params.newUid) {
           const rawUid = body.newUid || body.uid || body.id || params.newUid || params.uid;
           const newId = parseInt(rawUid, 10);
-          if (!isNaN(newId) && newId > 0 && newId !== currentId) {
+          if (!isNaN(newId) && newId >= 0 && newId !== currentId) {
             const existing = await db.prepare("SELECT * FROM users WHERE id = ?").bind(newId).first();
             if (existing) {
               const maxRow = await db.prepare("SELECT MAX(id) as maxId FROM users").first();
@@ -1488,7 +1502,7 @@ export default {
           }
         }
 
-        return textResponse("User updated");
+        return jsonResponse({ success: true, message: "Пользователь успешно обновлен!" });
       }
 
       if ((path.endsWith("/users/removeSub") || path.endsWith("/users/revokeSub")) && (method === "POST" || method === "PATCH" || method === "GET")) {
@@ -1545,25 +1559,30 @@ export default {
         return textResponse("HWID reset");
       }
 
-      // ==================== ADMIN SETTINGS ENDPOINTS ====================
-      if (path.endsWith("/settings/get") || path.endsWith("/settings/getAll")) {
+      // ==================== ADMIN SETTINGS & MEDIA ENDPOINTS ====================
+      if (path.endsWith("/settings/get") || path.endsWith("/settings/getAll") || path.endsWith("/media/getVideo")) {
         let downloadEnabled = true;
         let downloadUrl = "/downloads/kodexlauncher.exe";
+        let videoUrl = "https://www.youtube.com/embed/LsF6GYEHx1I?si=IFRCxX32_8xlJYTQ";
         if (db) {
           try {
             const row1 = await db.prepare("SELECT value FROM site_settings WHERE key = 'loader_download_enabled'").first();
             if (row1 && row1.value === "false") downloadEnabled = false;
             const row2 = await db.prepare("SELECT value FROM site_settings WHERE key = 'loader_download_url'").first();
             if (row2 && row2.value && !row2.value.includes("ExclusiveDLC.exe") && !row2.value.includes("KodexDLC.exe")) downloadUrl = row2.value;
+            const row3 = await db.prepare("SELECT value FROM site_settings WHERE key = 'video_url'").first();
+            if (row3 && row3.value) videoUrl = row3.value;
           } catch {}
         }
         return jsonResponse({
           loader_download_enabled: downloadEnabled,
           loader_download_url: downloadUrl,
+          video_url: videoUrl,
+          videoUrl: videoUrl,
         });
       }
 
-      if ((path.endsWith("/settings/set") || path.endsWith("/settings/update") || path.endsWith("/settings/toggleDownload")) && (method === "POST" || method === "PATCH")) {
+      if ((path.endsWith("/settings/set") || path.endsWith("/settings/update") || path.endsWith("/settings/toggleDownload") || path.endsWith("/media/setVideo")) && (method === "POST" || method === "PATCH")) {
         if (db) {
           try {
             if ("loader_download_enabled" in body || "enabled" in body || "loader_download_enabled" in params || "enabled" in params) {
@@ -1577,6 +1596,17 @@ export default {
               if (urlVal) {
                 await db.prepare("INSERT INTO site_settings (key, value) VALUES ('loader_download_url', ?) ON CONFLICT(key) DO UPDATE SET value = ?")
                   .bind(urlVal, urlVal).run();
+              }
+            }
+            if ("video_url" in body || "videoUrl" in body || params.video_url || params.videoUrl) {
+              let vUrl = (body.video_url || body.videoUrl || params.video_url || params.videoUrl || "").trim();
+              if (vUrl) {
+                const ytMatch = vUrl.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+                if (ytMatch && ytMatch[1]) {
+                  vUrl = `https://www.youtube.com/embed/${ytMatch[1]}`;
+                }
+                await db.prepare("INSERT INTO site_settings (key, value) VALUES ('video_url', ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+                  .bind(vUrl, vUrl).run();
               }
             }
           } catch {}
@@ -1801,14 +1831,7 @@ export default {
         return textResponse(`Мод для версии ${version} успешно загружен на сервер! (${Math.round(payloadB64.length * 0.75 / 1024)} KB)`);
       }
 
-      if (path.endsWith("/media/getVideo")) {
-        return jsonResponse({ videoUrl: "https://www.youtube.com/embed/LsF6GYEHx1I?si=IFRCxX32_8xlJYTQ" });
-      }
-
-      if (path.endsWith("/media/setVideo")) {
-        const videoUrl = params.videoUrl || body.videoUrl || "";
-        return jsonResponse({ status: "ok", videoUrl });
-      }
+// (media endpoints handled above)
 
       if (path.endsWith("/logs/getAllByCategory")) {
         return jsonResponse({});
