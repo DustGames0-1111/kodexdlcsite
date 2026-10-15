@@ -773,16 +773,6 @@ var ev = () => {
       className: "custom-footer-inner",
       children: [
         (0, I.jsxs)("div", {
-          className: "custom-footer-brand",
-          children: [
-            (0, I.jsx)("span", {
-              className: "custom-footer-sparkle",
-              children: "✦",
-            }),
-            (0, I.jsx)("span", { children: "Kodex" }),
-          ],
-        }),
-        (0, I.jsxs)("div", {
           className: "custom-footer-credits",
           children: [
             "Protected by ",
