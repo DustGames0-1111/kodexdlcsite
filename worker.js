@@ -839,7 +839,9 @@ export default {
     }
 
     if (path === "/ajax/payments/createPayment" || path === "/ajax/payments/frontend/create") {
-      return textResponse("Купить чит можно будет позже", 400);
+      const isBeta = (params.productId >= 100) || (body.productId >= 100) || (params.role === "BETA") || (body.role === "BETA");
+      if (isBeta) return textResponse("Soon", 400);
+      return textResponse("В данный момент оплата возможна только через Funpay", 400);
     }
 
     // ==================== MEDIA / PROMO STATS ====================
